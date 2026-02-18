@@ -5,7 +5,7 @@
 # Stop IDs to show (NSR:StopPlace:XXXXX).
 # Run `python find_stop.py "Vestre Aker Kirke"` to discover the correct ID.
 STOP_IDS = [
-    "NSR:StopPlace:6013",   # placeholder – replace after running find_stop.py
+    "NSR:StopPlace:6312",   # placeholder – replace after running find_stop.py
 ]
 
 # Only show these line numbers.  Empty list = show everything.
