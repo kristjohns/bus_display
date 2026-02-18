@@ -3,42 +3,43 @@
 
 import json
 import requests
-import config
+
+STOP_ID = "NSR:StopPlace:6312"
+URL = "https://api.entur.io/journey-planner/v3/graphql"
 
 query = """
-{{
-  stopPlace(id: "{stop_id}") {{
+{
+  stopPlace(id: "%s") {
     name
     estimatedCalls(
       numberOfDepartures: 20
       timeRange: 7200
-      omitNonBoarding: true
-    ) {{
+    ) {
       realtime
       cancellation
       aimedDepartureTime
       expectedDepartureTime
-      destinationDisplay {{ frontText }}
-      serviceJourney {{
-        line {{
+      destinationDisplay { frontText }
+      serviceJourney {
+        line {
           publicCode
           transportMode
-        }}
-      }}
-    }}
-  }}
-}}
-""".format(stop_id=config.STOP_IDS[0])
+        }
+      }
+    }
+  }
+}
+""" % STOP_ID
 
 headers = {
     "Content-Type": "application/json",
-    "ET-Client-Name": config.ENTUR_CLIENT_NAME,
+    "ET-Client-Name": "personal-bus-display",
 }
 
-print(f"Querying: {config.STOP_IDS[0]}")
-print(f"URL: {config.ENTUR_GRAPHQL_URL}\n")
+print(f"Querying: {STOP_ID}")
+print(f"URL: {URL}\n")
 
-resp = requests.post(config.ENTUR_GRAPHQL_URL, json={"query": query}, headers=headers, timeout=10)
+resp = requests.post(URL, json={"query": query}, headers=headers, timeout=10)
 print(f"HTTP status: {resp.status_code}\n")
 
 data = resp.json()
