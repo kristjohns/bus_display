@@ -9,7 +9,7 @@ STOP_IDS = [
 ]
 
 # Only show these line numbers.  Empty list = show everything.
-LINE_FILTER = ["20", "28"]
+LINE_FILTER = []  # empty = show all lines
 
 # How many departures to fetch per stop from the API
 DEPARTURES_PER_STOP = 12
