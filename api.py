@@ -86,7 +86,6 @@ _QUERY = """
     estimatedCalls(
       numberOfDepartures: {n}
       timeRange: 7200
-      omitNonBoarding: true
     ) {{
       realtime
       cancellation
