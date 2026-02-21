@@ -42,14 +42,21 @@ def main() -> None:
     if args.mock:
         log.info("Mock mode – using fake departure data")
         board.update_departures(api.mock_departures())
+        # Set mock stop location (Vestre Aker Kirke)
+        board.set_stop_location(59.948, 10.694)
+        board.update_vehicles(api.mock_vehicle_positions())
 
     last_fetch = 0.0
+    last_vehicle_fetch = 0.0
+    stop_location_set = False
 
     running = True
     while running:
         running = board.handle_events()
 
         now = time.monotonic()
+
+        # ------ Departure refresh (every REFRESH_INTERVAL seconds) ------
         if not args.mock and (now - last_fetch) >= config.REFRESH_INTERVAL:
             log.info("Fetching departures from Entur API…")
             try:
@@ -57,6 +64,13 @@ def main() -> None:
                 if deps:
                     board.update_departures(deps)
                     log.info("Got %d departures", len(deps))
+
+                    # Set stop location for the map (first time or update)
+                    loc = api.get_stop_location()
+                    if loc and not stop_location_set:
+                        board.set_stop_location(loc[0], loc[1])
+                        stop_location_set = True
+                        log.info("Stop location set: %.4f, %.4f", loc[0], loc[1])
                 else:
                     log.warning("No departures returned")
                     board.set_error("Ingen avganger funnet – sjekk STOP_IDS i config.py")
@@ -65,9 +79,25 @@ def main() -> None:
                 board.set_error(str(exc))
             last_fetch = now
 
+        # ------ Vehicle position refresh (every VEHICLE_REFRESH_INTERVAL) ------
+        if not args.mock and (now - last_vehicle_fetch) >= config.VEHICLE_REFRESH_INTERVAL:
+            loc = api.get_stop_location()
+            if loc and board.departures:
+                try:
+                    vehicles = api.fetch_vehicle_positions(
+                        board.departures, loc[0], loc[1]
+                    )
+                    board.update_vehicles(vehicles)
+                    if vehicles:
+                        log.info("Got %d vehicle positions", len(vehicles))
+                except Exception as exc:
+                    log.error("Vehicle position fetch failed: %s", exc)
+            last_vehicle_fetch = now
+
         # In mock mode, refresh mock data every 30s so minutes-until stays live
         if args.mock and (now - last_fetch) >= 30:
             board.update_departures(api.mock_departures())
+            board.update_vehicles(api.mock_vehicle_positions())
             last_fetch = now
 
         board.draw()

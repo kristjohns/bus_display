@@ -1,6 +1,7 @@
 """Pygame-based departure board renderer.
 
-Renders a Ruter-style full-screen departure board.
+Renders a Ruter-style full-screen departure board with a live map panel.
+Left side: departure board.  Right side: map with approaching vehicles.
 Works identically on desktop (windowed) and Raspberry Pi (fullscreen).
 """
 
@@ -14,14 +15,15 @@ from typing import List, Optional
 import pygame
 
 import config
-from api import Departure
+from api import Departure, VehiclePosition
+from map_widget import MapWidget
 
 # ---------------------------------------------------------------------------
 # Display class
 # ---------------------------------------------------------------------------
 
 class DepartureBoard:
-    """Manages the pygame window and renders the departure board."""
+    """Manages the pygame window and renders the departure board + map."""
 
     def __init__(self, fullscreen: bool = False):
         pygame.init()
@@ -44,6 +46,12 @@ class DepartureBoard:
         self.error_message: Optional[str] = None
         self.last_updated: Optional[datetime.datetime] = None
 
+        # Map widget
+        self.map_widget = MapWidget(
+            font=self.font_small,
+            font_small=self.font_tiny,
+        )
+
     def _load_fonts(self) -> None:
         # Try to find a nice system font; fall back to pygame default
         candidates = ["dejavusans", "liberationsans", "freesans", "arial", "sans"]
@@ -63,6 +71,14 @@ class DepartureBoard:
         self.last_updated = datetime.datetime.now()
         self.error_message = None
 
+    def set_stop_location(self, lat: float, lon: float) -> None:
+        """Set the stop location for the map widget."""
+        self.map_widget.set_stop_location(lat, lon)
+
+    def update_vehicles(self, vehicles: List[VehiclePosition]) -> None:
+        """Update the vehicle markers on the map."""
+        self.map_widget.set_vehicles(vehicles)
+
     def set_error(self, message: str) -> None:
         self.error_message = message
 
@@ -70,10 +86,28 @@ class DepartureBoard:
         w, h = self.screen.get_size()
         self.screen.fill(config.COLOR_BG)
 
+        # Split layout: departure board on left, map on right
+        board_w = int(w * config.BOARD_WIDTH_RATIO)
+
         y = 0
         y = self._draw_header(y, w)
-        y = self._draw_column_headers(y, w)
-        y = self._draw_departures(y, w, h)
+
+        # Column headers and departures only span the left panel
+        y_content = y
+        y_content = self._draw_column_headers(y_content, board_w)
+        y_content = self._draw_departures(y_content, board_w, h)
+
+        # Map fills the right panel (from header bottom to footer top)
+        footer_h = config.FONT_TINY + 12
+        map_rect = pygame.Rect(board_w, y, w - board_w, h - y - footer_h)
+        self.map_widget.draw(self.screen, map_rect)
+
+        # Vertical divider between board and map
+        pygame.draw.line(
+            self.screen, config.COLOR_DIVIDER,
+            (board_w, y), (board_w, h - footer_h), 2
+        )
+
         self._draw_footer(h, w)
 
         if self.error_message:
@@ -105,7 +139,7 @@ class DepartureBoard:
         """Draw the top header with stop name and clock. Returns new y."""
         header_h = config.FONT_LARGE + 28
 
-        # Background
+        # Background (full width)
         pygame.draw.rect(self.screen, config.COLOR_HEADER_BG, (0, y, w, header_h))
         pygame.draw.line(self.screen, config.COLOR_DIVIDER, (0, y + header_h - 1),
                          (w, y + header_h - 1), 2)
@@ -223,7 +257,7 @@ class DepartureBoard:
             self.screen.blit(surf, (24, h - footer_h + 6))
 
         # Data source
-        source = "Data: Entur / Ruter  |  Trykk F = fullskjerm  |  Q = avslutt"
+        source = "Data: Entur / Ruter  |  F = fullskjerm  |  Q = avslutt"
         surf = self.font_tiny.render(source, True, config.COLOR_TEXT_DIM)
         self.screen.blit(surf, (w - surf.get_width() - 24, h - footer_h + 6))
 
@@ -237,10 +271,10 @@ class DepartureBoard:
         self.screen.blit(surf, (w // 2 - surf.get_width() // 2, h // 2 - 15))
 
     def _column_positions(self, w: int) -> dict:
-        """Return x positions for each column."""
+        """Return x positions for each column, relative to the board width."""
         return {
             "line":    24,
-            "dest":    180,
-            "rt_dot":  w - 340,
+            "dest":    140,
+            "rt_dot":  w - 200,
             "time":    w - 24,
         }
