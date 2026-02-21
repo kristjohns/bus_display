@@ -226,7 +226,7 @@ def fetch_departures(stop_ids: List[str]) -> List[Departure]:
 
 _VEHICLES_QUERY = """
 {{
-  vehicles(lineRef: "{line_ref}") {{
+  vehicles(codespaceId: "{codespace}") {{
     bearing
     location {{
       latitude
@@ -252,21 +252,27 @@ def fetch_vehicle_positions(
 ) -> List[VehiclePosition]:
     """Fetch live vehicle positions for the lines in *departures*.
 
+    Queries by codespace (e.g. "RUT") and filters client-side by line.
     Returns the *max_vehicles* nearest vehicles to the stop, sorted by
     distance.
     """
-    # Collect unique line IDs and a lookup for badge colours
+    # Collect unique line IDs, codespaces, and lookups
     line_ids: set[str] = set()
+    codespaces: set[str] = set()
     colour_by_line: Dict[str, Tuple[Tuple[int,int,int], Tuple[int,int,int]]] = {}
     dest_by_sj: Dict[str, str] = {}
     for d in departures:
         if d.line_id:
             line_ids.add(d.line_id)
             colour_by_line[d.line_id] = (d.badge_colour, d.badge_text_colour)
+            # Extract codespace: "RUT:Line:20" → "RUT"
+            parts = d.line_id.split(":")
+            if parts:
+                codespaces.add(parts[0])
         if d.service_journey_id:
             dest_by_sj[d.service_journey_id] = d.destination
 
-    if not line_ids:
+    if not codespaces:
         return []
 
     headers = {
@@ -276,8 +282,8 @@ def fetch_vehicle_positions(
 
     all_vehicles: List[VehiclePosition] = []
 
-    for line_id in line_ids:
-        query = _VEHICLES_QUERY.format(line_ref=line_id)
+    for codespace in codespaces:
+        query = _VEHICLES_QUERY.format(codespace=codespace)
         try:
             resp = requests.post(
                 config.ENTUR_VEHICLES_URL,
@@ -288,10 +294,16 @@ def fetch_vehicle_positions(
             resp.raise_for_status()
             data = resp.json()
         except requests.RequestException as exc:
-            log.error("Vehicle positions request failed for %s: %s", line_id, exc)
+            log.error("Vehicle positions request failed for %s: %s", codespace, exc)
+            continue
+
+        # Log GraphQL errors if any
+        if data.get("errors"):
+            log.error("Vehicle positions GraphQL errors: %s", data["errors"])
             continue
 
         vehicles_data = (data.get("data") or {}).get("vehicles") or []
+        log.debug("Got %d raw vehicles for codespace %s", len(vehicles_data), codespace)
 
         for v in vehicles_data:
             loc = v.get("location") or {}
@@ -301,8 +313,12 @@ def fetch_vehicle_positions(
                 continue
 
             vline = v.get("line") or {}
-            line_ref = vline.get("lineRef") or line_id
+            line_ref = vline.get("lineRef") or ""
             line_number = vline.get("publicCode") or "?"
+
+            # Client-side filter: only keep vehicles on our lines
+            if line_ref not in line_ids:
+                continue
 
             sj = v.get("serviceJourney") or {}
             sj_id = sj.get("id") or ""
@@ -321,6 +337,8 @@ def fetch_vehicle_positions(
                 badge_colour=badge_col[0],
                 badge_text_colour=badge_col[1],
             ))
+
+    log.info("Filtered to %d vehicles on relevant lines", len(all_vehicles))
 
     # Sort by distance to stop, keep nearest
     def _dist(vp: VehiclePosition) -> float:
