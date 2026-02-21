@@ -44,7 +44,7 @@ def main() -> None:
         board.update_departures(api.mock_departures())
         # Set mock stop location (Vestre Aker Kirke)
         board.set_stop_location(59.948, 10.694)
-        board.update_vehicles(api.mock_vehicle_positions())
+        board.update_routes(api.mock_route_info())
 
     last_fetch = 0.0
     last_vehicle_fetch = 0.0
@@ -79,25 +79,29 @@ def main() -> None:
                 board.set_error(str(exc))
             last_fetch = now
 
-        # ------ Vehicle position refresh (every VEHICLE_REFRESH_INTERVAL) ------
+        # ------ Route + vehicle refresh (every VEHICLE_REFRESH_INTERVAL) ------
         if not args.mock and (now - last_vehicle_fetch) >= config.VEHICLE_REFRESH_INTERVAL:
             loc = api.get_stop_location()
             if loc and board.departures:
                 try:
                     vehicles = api.fetch_vehicle_positions(
-                        board.departures, loc[0], loc[1]
+                        board.departures, loc[0], loc[1], max_vehicles=20
                     )
-                    board.update_vehicles(vehicles)
-                    if vehicles:
-                        log.info("Got %d vehicle positions", len(vehicles))
+                    routes = api.fetch_route_info(board.departures, vehicles)
+                    board.update_routes(routes)
+                    log.info(
+                        "Routes: %d shown, %d with live vehicle",
+                        len(routes),
+                        sum(1 for r in routes if r.vehicle),
+                    )
                 except Exception as exc:
-                    log.error("Vehicle position fetch failed: %s", exc)
+                    log.error("Route/vehicle fetch failed: %s", exc)
             last_vehicle_fetch = now
 
         # In mock mode, refresh mock data every 30s so minutes-until stays live
         if args.mock and (now - last_fetch) >= 30:
             board.update_departures(api.mock_departures())
-            board.update_vehicles(api.mock_vehicle_positions())
+            board.update_routes(api.mock_route_info())
             last_fetch = now
 
         board.draw()

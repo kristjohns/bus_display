@@ -93,6 +93,16 @@ class VehiclePosition:
     badge_text_colour: Tuple[int, int, int] = (255, 255, 255)
 
 
+@dataclass
+class RouteInfo:
+    """Route polyline + optional live vehicle for one upcoming departure."""
+    line_number: str
+    stops: List[Tuple[float, float]]   # (lat, lon) in travel order
+    badge_colour: Tuple[int, int, int]
+    badge_text_colour: Tuple[int, int, int]
+    vehicle: Optional[VehiclePosition] = None
+
+
 # ---------------------------------------------------------------------------
 # Stop location storage
 # ---------------------------------------------------------------------------
@@ -351,6 +361,116 @@ def fetch_vehicle_positions(
 
 
 # ---------------------------------------------------------------------------
+# GraphQL query – service journey stop sequence (Entur Journey Planner v3)
+# ---------------------------------------------------------------------------
+
+_SJ_QUERY = """
+{{
+  serviceJourney(id: "{sj_id}") {{
+    passingTimes {{
+      quay {{
+        latitude
+        longitude
+      }}
+    }}
+  }}
+}}
+"""
+
+# Cache routes by service_journey_id – they never change within a day
+_route_cache: Dict[str, List[Tuple[float, float]]] = {}
+
+
+def fetch_route_info(
+    departures: List[Departure],
+    vehicles: List[VehiclePosition],
+    max_routes: int = 4,
+) -> List[RouteInfo]:
+    """Return route polylines for the first *max_routes* unique departures.
+
+    Each RouteInfo contains the ordered stop coordinates for that trip and,
+    when available, the matching live VehiclePosition.
+    """
+    # Index vehicles: prefer exact sj match, fall back to any vehicle on the line
+    vehicle_by_sj: Dict[str, VehiclePosition] = {}
+    vehicle_by_line: Dict[str, VehiclePosition] = {}
+    for v in vehicles:
+        vehicle_by_sj[v.service_journey_id] = v
+        if v.line_ref not in vehicle_by_line:
+            vehicle_by_line[v.line_ref] = v
+
+    headers = {
+        "Content-Type": "application/json",
+        "ET-Client-Name": config.ENTUR_CLIENT_NAME,
+    }
+
+    seen_sj: set = set()
+    routes: List[RouteInfo] = []
+
+    for dep in departures:
+        if len(routes) >= max_routes:
+            break
+        sj_id = dep.service_journey_id
+        if not sj_id or sj_id in seen_sj:
+            continue
+        seen_sj.add(sj_id)
+
+        # Use disk/memory cache if available
+        if sj_id in _route_cache:
+            stops = _route_cache[sj_id]
+        else:
+            query = _SJ_QUERY.format(sj_id=sj_id)
+            try:
+                resp = requests.post(
+                    config.ENTUR_GRAPHQL_URL,
+                    json={"query": query},
+                    headers=headers,
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except requests.RequestException as exc:
+                log.error("Route fetch failed for %s: %s", sj_id, exc)
+                continue
+
+            if data.get("errors"):
+                log.error("Route GraphQL errors for %s: %s", sj_id, data["errors"])
+                continue
+
+            sj_data = (data.get("data") or {}).get("serviceJourney")
+            if not sj_data:
+                log.warning("No serviceJourney data for %s", sj_id)
+                continue
+
+            stops = []
+            for pt in sj_data.get("passingTimes") or []:
+                quay = pt.get("quay") or {}
+                lat = quay.get("latitude")
+                lon = quay.get("longitude")
+                if lat is not None and lon is not None:
+                    stops.append((float(lat), float(lon)))
+
+            if not stops:
+                log.warning("Empty stop list for %s", sj_id)
+                continue
+
+            _route_cache[sj_id] = stops
+            log.info("Cached route for %s: %d stops", sj_id, len(stops))
+
+        vehicle = vehicle_by_sj.get(sj_id) or vehicle_by_line.get(dep.line_id)
+
+        routes.append(RouteInfo(
+            line_number=dep.line_number,
+            stops=stops,
+            badge_colour=dep.badge_colour,
+            badge_text_colour=dep.badge_text_colour,
+            vehicle=vehicle,
+        ))
+
+    return routes
+
+
+# ---------------------------------------------------------------------------
 # Mock data (for offline / unit testing)
 # ---------------------------------------------------------------------------
 
@@ -410,5 +530,52 @@ def mock_vehicle_positions() -> List[VehiclePosition]:
             service_journey_id="RUT:ServiceJourney:20-11",
             bearing=150.0, destination="Skøyen",
             badge_colour=(230, 0, 0), badge_text_colour=(255, 255, 255),
+        ),
+    ]
+
+
+def mock_route_info() -> List[RouteInfo]:
+    """Return fake RouteInfo objects for testing near Vestre Aker Kirke."""
+    # Line 20 roughly follows Sørkedalsveien → Kirkeveien → Skøyen
+    stops_20 = [
+        (59.963, 10.659), (59.960, 10.663), (59.957, 10.668),
+        (59.954, 10.674), (59.952, 10.681), (59.950, 10.688),
+        (59.948, 10.694),  # Vestre Aker Kirke
+        (59.946, 10.700), (59.944, 10.707), (59.942, 10.714),
+        (59.940, 10.720), (59.938, 10.726),
+    ]
+    # Line 28 branches northwest towards Fornebu
+    stops_28 = [
+        (59.965, 10.724), (59.961, 10.718), (59.957, 10.712),
+        (59.954, 10.706), (59.951, 10.699), (59.948, 10.694),  # Vestre Aker Kirke
+        (59.945, 10.689), (59.942, 10.683), (59.939, 10.676),
+        (59.936, 10.669), (59.933, 10.661),
+    ]
+    return [
+        RouteInfo(
+            line_number="20",
+            stops=stops_20,
+            badge_colour=(230, 0, 0),
+            badge_text_colour=(255, 255, 255),
+            vehicle=VehiclePosition(
+                latitude=59.945, longitude=10.700,
+                line_ref="RUT:Line:20", line_number="20",
+                service_journey_id="RUT:ServiceJourney:20-1",
+                bearing=130.0, destination="Skøyen",
+                badge_colour=(230, 0, 0), badge_text_colour=(255, 255, 255),
+            ),
+        ),
+        RouteInfo(
+            line_number="28",
+            stops=stops_28,
+            badge_colour=(230, 0, 0),
+            badge_text_colour=(255, 255, 255),
+            vehicle=VehiclePosition(
+                latitude=59.943, longitude=10.683,
+                line_ref="RUT:Line:28", line_number="28",
+                service_journey_id="RUT:ServiceJourney:28-3",
+                bearing=50.0, destination="Fornebu",
+                badge_colour=(230, 0, 0), badge_text_colour=(255, 255, 255),
+            ),
         ),
     ]

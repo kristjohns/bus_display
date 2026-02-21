@@ -69,11 +69,11 @@ class TestDepartureBoardSmoke(unittest.TestCase):
         self.board.update_departures(api.mock_departures())
         self.assertIsNone(self.board.error_message)
 
-    def test_draw_with_map_and_vehicles(self):
-        """Board with stop location and vehicles should draw."""
+    def test_draw_with_map_and_routes(self):
+        """Board with stop location and routes should draw."""
         self.board.update_departures(api.mock_departures())
         self.board.set_stop_location(59.948, 10.694)
-        self.board.update_vehicles(api.mock_vehicle_positions())
+        self.board.update_routes(api.mock_route_info())
         self.board.draw()
 
     def test_set_stop_location(self):
@@ -82,11 +82,11 @@ class TestDepartureBoardSmoke(unittest.TestCase):
         self.assertEqual(self.board.map_widget.stop_lat, 59.948)
         self.assertEqual(self.board.map_widget.stop_lon, 10.694)
 
-    def test_update_vehicles(self):
-        """Updating vehicles should propagate to map widget."""
-        vehicles = api.mock_vehicle_positions()
-        self.board.update_vehicles(vehicles)
-        self.assertEqual(len(self.board.map_widget.vehicles), 3)
+    def test_update_routes(self):
+        """Updating routes should propagate to map widget."""
+        routes = api.mock_route_info()
+        self.board.update_routes(routes)
+        self.assertEqual(len(self.board.map_widget.routes), 2)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from typing import List, Optional
 import pygame
 
 import config
-from api import Departure, VehiclePosition
+from api import Departure, RouteInfo
 from map_widget import MapWidget
 
 # ---------------------------------------------------------------------------
@@ -75,9 +75,9 @@ class DepartureBoard:
         """Set the stop location for the map widget."""
         self.map_widget.set_stop_location(lat, lon)
 
-    def update_vehicles(self, vehicles: List[VehiclePosition]) -> None:
-        """Update the vehicle markers on the map."""
-        self.map_widget.set_vehicles(vehicles)
+    def update_routes(self, routes: List[RouteInfo]) -> None:
+        """Update the route polylines and vehicle markers on the map."""
+        self.map_widget.set_routes(routes)
 
     def set_error(self, message: str) -> None:
         self.error_message = message
