@@ -327,12 +327,12 @@ def fetch_vehicle_positions(
              stop_lat + dlat, stop_lon + dlon)
     log.info("Looking for line_ids=%s, line_numbers=%s", line_ids, line_numbers)
 
-    # Log a sample of what the API returned for debugging
-    for sample in vehicles_data[:3]:
-        sline = sample.get("line") or {}
-        log.info("  Sample vehicle: lineRef=%r publicCode=%r dest=%r",
-                 sline.get("lineRef"), sline.get("publicCode"),
-                 sample.get("destinationName"))
+    # Log ALL unique (lineRef, publicCode) pairs so we can spot mismatches
+    api_lines = set()
+    for v in vehicles_data:
+        vl = v.get("line") or {}
+        api_lines.add((vl.get("lineRef") or "?", vl.get("publicCode") or "?"))
+    log.info("All lines in bounding box: %s", sorted(api_lines))
 
     all_vehicles: List[VehiclePosition] = []
     for v in vehicles_data:
