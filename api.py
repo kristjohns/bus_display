@@ -487,6 +487,12 @@ def fetch_route_info(
         vehicle = (vehicle_by_sj.get(sj_id)
                    or vehicle_by_line.get(dep.line_id)
                    or vehicle_by_number.get(dep.line_number))
+        log.info("Route %s (line %s/%s): sj=%s line=%s num=%s → %s",
+                 dep.line_number, dep.line_id, dep.line_number,
+                 "HIT" if vehicle_by_sj.get(sj_id) else "miss",
+                 "HIT" if vehicle_by_line.get(dep.line_id) else "miss",
+                 "HIT" if vehicle_by_number.get(dep.line_number) else "miss",
+                 "LIVE" if vehicle else "none")
 
         routes.append(RouteInfo(
             line_number=dep.line_number,
