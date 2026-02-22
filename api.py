@@ -415,13 +415,16 @@ def fetch_route_info(
     Each RouteInfo contains the ordered stop coordinates for that trip and,
     when available, the matching live VehiclePosition.
     """
-    # Index vehicles: prefer exact sj match, fall back to any vehicle on the line
+    # Index vehicles: prefer exact sj match, fall back to line_ref or line_number
     vehicle_by_sj: Dict[str, VehiclePosition] = {}
     vehicle_by_line: Dict[str, VehiclePosition] = {}
+    vehicle_by_number: Dict[str, VehiclePosition] = {}
     for v in vehicles:
         vehicle_by_sj[v.service_journey_id] = v
         if v.line_ref not in vehicle_by_line:
             vehicle_by_line[v.line_ref] = v
+        if v.line_number not in vehicle_by_number:
+            vehicle_by_number[v.line_number] = v
 
     headers = {
         "Content-Type": "application/json",
@@ -481,7 +484,9 @@ def fetch_route_info(
             _route_cache[sj_id] = stops
             log.info("Cached route for %s: %d stops", sj_id, len(stops))
 
-        vehicle = vehicle_by_sj.get(sj_id) or vehicle_by_line.get(dep.line_id)
+        vehicle = (vehicle_by_sj.get(sj_id)
+                   or vehicle_by_line.get(dep.line_id)
+                   or vehicle_by_number.get(dep.line_number))
 
         routes.append(RouteInfo(
             line_number=dep.line_number,
