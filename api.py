@@ -236,8 +236,9 @@ def fetch_departures(stop_ids: List[str]) -> List[Departure]:
 
 _VEHICLES_QUERY = """
 {{
-  vehicles(codespaceId: "{codespace}") {{
+  vehicles(boundingBox: {{minLat: {min_lat}, minLon: {min_lon}, maxLat: {max_lat}, maxLon: {max_lon}}}) {{
     bearing
+    destinationName
     location {{
       latitude
       longitude
@@ -258,95 +259,110 @@ def fetch_vehicle_positions(
     departures: List[Departure],
     stop_lat: float,
     stop_lon: float,
-    max_vehicles: int = 3,
+    max_vehicles: int = 20,
+    radius_km: float = 3.0,
 ) -> List[VehiclePosition]:
-    """Fetch live vehicle positions for the lines in *departures*.
+    """Fetch live vehicle positions near the stop using a geographic bounding box.
 
-    Queries by codespace (e.g. "RUT") and filters client-side by line.
-    Returns the *max_vehicles* nearest vehicles to the stop, sorted by
-    distance.
+    Returns the *max_vehicles* nearest vehicles on relevant lines, sorted by
+    distance to the stop.  Uses both lineRef and publicCode for matching to
+    handle format differences between the journey planner and vehicles APIs.
     """
-    # Collect unique line IDs, codespaces, and lookups
+    # Build bounding box around stop
+    dlat = radius_km / 111.0
+    dlon = radius_km / (111.0 * max(math.cos(math.radians(stop_lat)), 0.01))
+
+    # Collect line lookups from departures
     line_ids: set[str] = set()
-    codespaces: set[str] = set()
-    colour_by_line: Dict[str, Tuple[Tuple[int,int,int], Tuple[int,int,int]]] = {}
+    line_numbers: set[str] = set()
+    colour_by_line: Dict[str, Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = {}
+    colour_by_number: Dict[str, Tuple[Tuple[int, int, int], Tuple[int, int, int]]] = {}
     dest_by_sj: Dict[str, str] = {}
     for d in departures:
         if d.line_id:
             line_ids.add(d.line_id)
             colour_by_line[d.line_id] = (d.badge_colour, d.badge_text_colour)
-            # Extract codespace: "RUT:Line:20" → "RUT"
-            parts = d.line_id.split(":")
-            if parts:
-                codespaces.add(parts[0])
+        if d.line_number:
+            line_numbers.add(d.line_number)
+            colour_by_number[d.line_number] = (d.badge_colour, d.badge_text_colour)
         if d.service_journey_id:
             dest_by_sj[d.service_journey_id] = d.destination
 
-    if not codespaces:
+    if not line_ids and not line_numbers:
         return []
+
+    query = _VEHICLES_QUERY.format(
+        min_lat=stop_lat - dlat,
+        min_lon=stop_lon - dlon,
+        max_lat=stop_lat + dlat,
+        max_lon=stop_lon + dlon,
+    )
 
     headers = {
         "Content-Type": "application/json",
         "ET-Client-Name": config.ENTUR_CLIENT_NAME,
     }
 
+    try:
+        resp = requests.post(
+            config.ENTUR_VEHICLES_URL,
+            json={"query": query},
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as exc:
+        log.error("Vehicle positions request failed: %s", exc)
+        return []
+
+    if data.get("errors"):
+        log.error("Vehicle positions GraphQL errors: %s", data["errors"])
+        return []
+
+    vehicles_data = (data.get("data") or {}).get("vehicles") or []
+    log.info("Got %d vehicles in bounding box (%.4f,%.4f)-(%.4f,%.4f)",
+             len(vehicles_data),
+             stop_lat - dlat, stop_lon - dlon,
+             stop_lat + dlat, stop_lon + dlon)
+
     all_vehicles: List[VehiclePosition] = []
-
-    for codespace in codespaces:
-        query = _VEHICLES_QUERY.format(codespace=codespace)
-        try:
-            resp = requests.post(
-                config.ENTUR_VEHICLES_URL,
-                json={"query": query},
-                headers=headers,
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except requests.RequestException as exc:
-            log.error("Vehicle positions request failed for %s: %s", codespace, exc)
+    for v in vehicles_data:
+        loc = v.get("location") or {}
+        lat = loc.get("latitude")
+        lon = loc.get("longitude")
+        if lat is None or lon is None:
             continue
 
-        # Log GraphQL errors if any
-        if data.get("errors"):
-            log.error("Vehicle positions GraphQL errors: %s", data["errors"])
+        vline = v.get("line") or {}
+        line_ref = vline.get("lineRef") or ""
+        line_number = vline.get("publicCode") or "?"
+
+        # Match by lineRef (exact NeTEx ID) or publicCode (fallback)
+        if line_ref in line_ids:
+            badge_col = colour_by_line.get(
+                line_ref, (config.COLOR_BADGE_DEFAULT, (255, 255, 255)))
+        elif line_number in line_numbers:
+            badge_col = colour_by_number.get(
+                line_number, (config.COLOR_BADGE_DEFAULT, (255, 255, 255)))
+        else:
             continue
 
-        vehicles_data = (data.get("data") or {}).get("vehicles") or []
-        log.debug("Got %d raw vehicles for codespace %s", len(vehicles_data), codespace)
+        sj = v.get("serviceJourney") or {}
+        sj_id = sj.get("id") or ""
+        destination = dest_by_sj.get(sj_id, "") or v.get("destinationName") or ""
 
-        for v in vehicles_data:
-            loc = v.get("location") or {}
-            lat = loc.get("latitude")
-            lon = loc.get("longitude")
-            if lat is None or lon is None:
-                continue
-
-            vline = v.get("line") or {}
-            line_ref = vline.get("lineRef") or ""
-            line_number = vline.get("publicCode") or "?"
-
-            # Client-side filter: only keep vehicles on our lines
-            if line_ref not in line_ids:
-                continue
-
-            sj = v.get("serviceJourney") or {}
-            sj_id = sj.get("id") or ""
-
-            badge_col = colour_by_line.get(line_ref, (config.COLOR_BADGE_DEFAULT, (255, 255, 255)))
-            destination = dest_by_sj.get(sj_id, "")
-
-            all_vehicles.append(VehiclePosition(
-                latitude=lat,
-                longitude=lon,
-                line_ref=line_ref,
-                line_number=line_number,
-                service_journey_id=sj_id,
-                bearing=v.get("bearing") or 0.0,
-                destination=destination,
-                badge_colour=badge_col[0],
-                badge_text_colour=badge_col[1],
-            ))
+        all_vehicles.append(VehiclePosition(
+            latitude=lat,
+            longitude=lon,
+            line_ref=line_ref or line_number,
+            line_number=line_number,
+            service_journey_id=sj_id,
+            bearing=v.get("bearing") or 0.0,
+            destination=destination,
+            badge_colour=badge_col[0],
+            badge_text_colour=badge_col[1],
+        ))
 
     log.info("Filtered to %d vehicles on relevant lines", len(all_vehicles))
 
@@ -384,7 +400,7 @@ _route_cache: Dict[str, List[Tuple[float, float]]] = {}
 def fetch_route_info(
     departures: List[Departure],
     vehicles: List[VehiclePosition],
-    max_routes: int = 4,
+    max_routes: int = 3,
 ) -> List[RouteInfo]:
     """Return route polylines for the first *max_routes* unique departures.
 
