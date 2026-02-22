@@ -325,6 +325,14 @@ def fetch_vehicle_positions(
              len(vehicles_data),
              stop_lat - dlat, stop_lon - dlon,
              stop_lat + dlat, stop_lon + dlon)
+    log.info("Looking for line_ids=%s, line_numbers=%s", line_ids, line_numbers)
+
+    # Log a sample of what the API returned for debugging
+    for sample in vehicles_data[:3]:
+        sline = sample.get("line") or {}
+        log.info("  Sample vehicle: lineRef=%r publicCode=%r dest=%r",
+                 sline.get("lineRef"), sline.get("publicCode"),
+                 sample.get("destinationName"))
 
     all_vehicles: List[VehiclePosition] = []
     for v in vehicles_data:
