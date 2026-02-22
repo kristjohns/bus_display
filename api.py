@@ -260,7 +260,7 @@ def fetch_vehicle_positions(
     stop_lat: float,
     stop_lon: float,
     max_vehicles: int = 20,
-    radius_km: float = 3.0,
+    radius_km: float = 5.0,
 ) -> List[VehiclePosition]:
     """Fetch live vehicle positions near the stop using a geographic bounding box.
 
@@ -372,7 +372,10 @@ def fetch_vehicle_positions(
             badge_text_colour=badge_col[1],
         ))
 
-    log.info("Filtered to %d vehicles on relevant lines", len(all_vehicles))
+    matched_lines = {}
+    for vp in all_vehicles:
+        matched_lines[vp.line_number] = matched_lines.get(vp.line_number, 0) + 1
+    log.info("Filtered to %d vehicles on relevant lines: %s", len(all_vehicles), dict(matched_lines))
 
     # Sort by distance to stop, keep nearest
     def _dist(vp: VehiclePosition) -> float:
