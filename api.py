@@ -405,15 +405,28 @@ _SJ_QUERY = """
 _route_cache: Dict[str, List[Tuple[float, float]]] = {}
 
 
+def _find_vehicle(
+    dep: Departure,
+    vehicle_by_sj: Dict[str, "VehiclePosition"],
+    vehicle_by_line: Dict[str, "VehiclePosition"],
+    vehicle_by_number: Dict[str, "VehiclePosition"],
+) -> Optional["VehiclePosition"]:
+    """Match a departure to a live vehicle using three fallback strategies."""
+    return (vehicle_by_sj.get(dep.service_journey_id)
+            or vehicle_by_line.get(dep.line_id)
+            or vehicle_by_number.get(dep.line_number))
+
+
 def fetch_route_info(
     departures: List[Departure],
     vehicles: List[VehiclePosition],
     max_routes: int = 3,
 ) -> List[RouteInfo]:
-    """Return route polylines for the first *max_routes* unique departures.
+    """Return route polylines for up to *max_routes* departures.
 
-    Each RouteInfo contains the ordered stop coordinates for that trip and,
-    when available, the matching live VehiclePosition.
+    Prioritises departures that have a matching live vehicle so that the
+    map always shows approaching buses when data is available.  Also
+    prefers line variety (one route per line number) over duplicates.
     """
     # Index vehicles: prefer exact sj match, fall back to line_ref or line_number
     vehicle_by_sj: Dict[str, VehiclePosition] = {}
@@ -426,21 +439,54 @@ def fetch_route_info(
         if v.line_number not in vehicle_by_number:
             vehicle_by_number[v.line_number] = v
 
+    # Two-pass candidate selection:
+    #   1. Departures with a live vehicle (most useful on the map)
+    #   2. Remaining departures in time order
+    # Within each group, prefer unique line numbers for variety.
+    seen_sj: set = set()
+    with_vehicle: List[Tuple[Departure, VehiclePosition]] = []
+    without_vehicle: List[Departure] = []
+
+    for dep in departures:
+        sj_id = dep.service_journey_id
+        if not sj_id or sj_id in seen_sj:
+            continue
+        seen_sj.add(sj_id)
+        veh = _find_vehicle(dep, vehicle_by_sj, vehicle_by_line, vehicle_by_number)
+        if veh:
+            with_vehicle.append((dep, veh))
+        else:
+            without_vehicle.append(dep)
+
+    # Build the ordered candidate list: vehicles first, then fill remaining
+    ordered: List[Tuple[Departure, Optional[VehiclePosition]]] = []
+    seen_lines: set = set()
+    for dep, veh in with_vehicle:
+        if dep.line_number not in seen_lines:
+            ordered.append((dep, veh))
+            seen_lines.add(dep.line_number)
+    for dep in without_vehicle:
+        if dep.line_number not in seen_lines:
+            ordered.append((dep, None))
+            seen_lines.add(dep.line_number)
+    # If still short, allow duplicate lines from time-ordered departures
+    if len(ordered) < max_routes:
+        for dep in without_vehicle:
+            if len(ordered) >= max_routes:
+                break
+            if any(dep.service_journey_id == o[0].service_journey_id for o in ordered):
+                continue
+            ordered.append((dep, None))
+
     headers = {
         "Content-Type": "application/json",
         "ET-Client-Name": config.ENTUR_CLIENT_NAME,
     }
 
-    seen_sj: set = set()
     routes: List[RouteInfo] = []
 
-    for dep in departures:
-        if len(routes) >= max_routes:
-            break
+    for dep, vehicle in ordered[:max_routes]:
         sj_id = dep.service_journey_id
-        if not sj_id or sj_id in seen_sj:
-            continue
-        seen_sj.add(sj_id)
 
         # Use disk/memory cache if available
         if sj_id in _route_cache:
@@ -484,15 +530,9 @@ def fetch_route_info(
             _route_cache[sj_id] = stops
             log.info("Cached route for %s: %d stops", sj_id, len(stops))
 
-        vehicle = (vehicle_by_sj.get(sj_id)
-                   or vehicle_by_line.get(dep.line_id)
-                   or vehicle_by_number.get(dep.line_number))
-        log.info("Route %s (line %s/%s): sj=%s line=%s num=%s → %s",
-                 dep.line_number, dep.line_id, dep.line_number,
-                 "HIT" if vehicle_by_sj.get(sj_id) else "miss",
-                 "HIT" if vehicle_by_line.get(dep.line_id) else "miss",
-                 "HIT" if vehicle_by_number.get(dep.line_number) else "miss",
-                 "LIVE" if vehicle else "none")
+        log.info("Route %s (line %s): %s",
+                 dep.line_number, dep.line_id,
+                 "LIVE" if vehicle else "route only")
 
         routes.append(RouteInfo(
             line_number=dep.line_number,
